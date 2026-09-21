@@ -1,0 +1,234 @@
+// Personal Conversation Copilot — data model
+// Entities: contacts, conversations, messages, user_style_profile,
+// conversation_memory, ai_settings, generated_replies (+ queue/webhook/usage)
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model Contact {
+  id          String  @id @default(cuid())
+  name        String
+  phoneNumber String  @unique
+  waId        String? @unique
+  avatarColor String  @default("#25D366")
+  about       String?
+  tags        String  @default("") // comma separated
+  notes       String?
+  isFavorite  Boolean @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  conversations Conversation[]
+
+  @@index([name])
+}
+
+model Conversation {
+  id                 String   @id @default(cuid())
+  contactId          String
+  contact            Contact  @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  title              String?
+  channel            String   @default("whatsapp")
+  status             String   @default("active") // active | archived
+  lastMessageAt      DateTime @default(now())
+  lastMessagePreview String?
+  unreadCount        Int      @default(0)
+
+  // per-conversation overrides (null = inherit global settings)
+  autoSendOverride Boolean?
+  toneOverride     String?
+  languageOverride String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  messages         Message[]
+  memories         ConversationMemory[]
+  generatedReplies GeneratedReply[]
+  outbound         OutboundMessage[]
+
+  @@index([lastMessageAt])
+  @@index([contactId])
+}
+
+model Message {
+  id             String  @id @default(cuid())
+  conversationId String
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  direction String // inbound | outbound
+  sender    String // contact | me | ai | system
+  body      String
+  mediaType String? // text | image | audio | document | video | sticker | location
+  mediaUrl  String?
+  waMessageId String? @unique
+
+  status          String  @default("received") // received | queued | sent | delivered | read | failed
+  isAiDrafted     Boolean @default(false)
+  intent          String? // question | plan | flirt | smalltalk | logistics | other
+  rawPayload      String? // raw provider payload (JSON string)
+
+  createdAt DateTime @default(now())
+
+  @@index([conversationId, createdAt])
+  @@index([createdAt])
+}
+
+model UserStyleProfile {
+  id       String @id @default("default")
+  displayName String @default("Me")
+
+  preferredLanguage String @default("Hinglish") // English | Hindi | Hinglish
+  typicalLength     String @default("short") // very-short | short | medium | long
+  formalityLevel    Int    @default(4) // 1..10
+  humorLevel        Int    @default(7) // 1..10
+  flirtinessLevel   Int    @default(6) // 1..10
+  confidenceLevel   Int    @default(8) // 1..10
+  emojiUsage        String @default("moderate") // none | rare | moderate | heavy
+
+  commonPhrases        String @default("") // newline separated
+  avoidPhrases         String @default("") // newline separated
+  interests            String @default("")
+  communicationPrefs   String @default("")
+  trainingSamples      String @default("") // my own past messages used as style training data
+  signature            String @default("")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model ConversationMemory {
+  id             String @id @default(cuid())
+  conversationId String
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  kind       String  @default("fact") // fact | note | preference | important_date | taboo | summary
+  label      String?
+  value      String
+  importance Int     @default(3) // 1..5
+  pinned     Boolean @default(false)
+  source     String  @default("user") // user | ai
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([conversationId])
+}
+
+model AiSetting {
+  id String @id @default("default")
+
+  provider       String  @default("ollama") // ollama | openai | mock | auto
+  fallbackEnabled Boolean @default(true) // fall back to mock provider when unreachable
+
+  ollamaBaseUrl String @default("http://localhost:11434/v1")
+  ollamaModel   String @default("qwen3:8b")
+
+  openaiBaseUrl String  @default("https://api.openai.com/v1")
+  openaiModel   String  @default("gpt-4o-mini")
+  openaiApiKey  String? // SERVER-SIDE ONLY — never serialised to the client
+
+  temperature  Float   @default(0.85)
+  maxTokens    Int     @default(400)
+  suggestionCount Int  @default(5)
+  requestTimeoutMs Int @default(60000)
+  systemPromptExtra String @default("")
+
+  autoSend          Boolean @default(false) // false = Copilot (suggest) | true = Autopilot (auto send)
+  autoSendThreshold Int     @default(0)     // 0 = send top suggestion
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model GeneratedReply {
+  id             String @id @default(cuid())
+  conversationId String
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  sourceMessageId String?
+
+  style  String // suggested | casual | warm | playful | short | custom
+  body   String
+  editedBody String?
+
+  provider String @default("mock")
+  model    String @default("local-mock")
+  latencyMs Int   @default(0)
+
+  status     String    @default("draft") // draft | approved | sent | discarded
+  autoSent   Boolean   @default(false)
+  approvedAt DateTime?
+  sentAt     DateTime?
+
+  promptTokens     Int @default(0)
+  completionTokens Int @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([conversationId, createdAt])
+  @@index([status])
+}
+
+model OutboundMessage {
+  id             String @id @default(cuid())
+  conversationId String
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  replyId        String?
+
+  to      String
+  body    String
+  mode    String @default("simulated") // simulated | live
+  status  String @default("queued")    // queued | sending | sent | failed | cancelled
+  attempts Int   @default(0)
+  lastError String?
+  waMessageId String?
+
+  scheduledAt DateTime?
+  sentAt      DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status, createdAt])
+}
+
+model WebhookEvent {
+  id             String  @id @default(cuid())
+  source         String  @default("whatsapp")
+  eventType      String  @default("message")
+  signatureValid Boolean?
+  payload        String  // raw JSON string
+  processed      Boolean @default(false)
+  processingError String?
+
+  createdAt DateTime @default(now())
+
+  @@index([createdAt])
+}
+
+model AiUsageLog {
+  id             String  @id @default(cuid())
+  provider       String
+  model          String
+  conversationId String?
+  replyId        String?
+  promptTokens   Int     @default(0)
+  completionTokens Int   @default(0)
+  totalTokens    Int     @default(0)
+  latencyMs      Int     @default(0)
+  success        Boolean @default(true)
+  fallbackUsed   Boolean @default(false)
+  error          String?
+
+  createdAt DateTime @default(now())
+
+  @@index([createdAt])
+}
